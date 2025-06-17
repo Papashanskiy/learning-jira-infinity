@@ -1,37 +1,23 @@
-import os
 import logging
 from typing import List
 from datetime import datetime
 from jira import JIRA
 from apscheduler.schedulers.blocking import BlockingScheduler
 import openai
-from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
-
-# Jira and OpenAI configuration
-JIRA_URL = os.getenv("JIRA_URL")
-JIRA_USER = os.getenv("JIRA_USER")
-JIRA_TOKEN = os.getenv("JIRA_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-# Field key for "Epic Link" in Jira (update if yours differs)
-EPIC_LINK_FIELD = "customfield_10014"
-
-# Status names in Jira workflow
-STATUS_IN_PROGRESS = "In Progress"
-STATUS_BACKLOG = "Backlog"
-STATUS_DONE = "Done"
-
-# Schedule: weekday -> list of (epic, topic)
-PROJECT_SCHEDULE = {
-    0: [("PRO-1", "English"), ("PRO-2", "Algorithms and Data Structures")],
-    1: [("PRO-1", "English"), ("PRO-3", "System Design")],
-    2: [("PRO-1", "English"), ("PRO-4", "Python and Development")],
-    3: [("PRO-1", "English"), ("PRO-5", "ML Ops and DevOps")],
-    4: [("PRO-1", "English"), ("PRO-6", "Databases and Data Engineering")],
-}
+from config import (
+    JIRA_URL,
+    JIRA_USER,
+    JIRA_TOKEN,
+    OPENAI_API_KEY,
+    EPIC_LINK_FIELD,
+    STATUS_IN_PROGRESS,
+    STATUS_BACKLOG,
+    STATUS_DONE,
+    PROJECT_SCHEDULE,
+    OPENAI_MODEL,
+    OPENAI_TEMPERATURE,
+)
 
 
 def validate_config():
@@ -70,9 +56,9 @@ def generate_new_task(topic_history: List[str], topic: str) -> dict:
         )
 
     response = openai.ChatCompletion.create(
-        model="gpt-4",
+        model=OPENAI_MODEL,
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.7
+        temperature=OPENAI_TEMPERATURE
     )
     content = response.choices[0].message.content.strip()
     summary = content.splitlines()[0].lstrip('# ').strip()
