@@ -33,13 +33,15 @@ JIRA_TOKEN=your-jira-api-token
 OPENAI_API_KEY=your-openai-api-key
 ```
 
-4. Для тестового запуска:
+4. При необходимости скорректируйте расписание и статусы в `core/config.py`
+
+5. Для тестового запуска:
 ```bash
 cd core
 python test_run.py
 ```
 
-5. Для запуска планировщика:
+6. Для запуска планировщика:
 ```bash
 cd core
 python main.py
