@@ -1,7 +1,7 @@
 import logging
-from typing import List
+from typing import List, Optional
 
-from jira import Issue
+from jira import Comment, Issue
 
 from config import JIRA_HISTORY_KEY, JIRA_PROJECT_KEY, STATUS_DONE
 from main import (
@@ -103,7 +103,7 @@ def main():
 
         history_issue = jira.issue(JIRA_HISTORY_KEY)
         history_comments = history_issue.fields.comment.comments
-        topic_history_comment: str = seek_topic_history_comment(history_comments, epic_key)
+        topic_history_comment: Optional[Comment] = seek_topic_history_comment(history_comments, epic_key)
 
         if topic_history_comment:
             update_topic_history(topic_history_comment, final_themes)

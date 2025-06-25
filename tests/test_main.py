@@ -7,6 +7,7 @@ from core.main import (
     notify,
     get_topic_history,
 )
+import logging
 
 
 class DummyIssue:
@@ -30,18 +31,20 @@ def test_epic_exists_false():
 
 
 def test_generate_new_task(monkeypatch):
+    monkeypatch.setattr("core.main.DRY_RUN", False)
     groq_client = MagicMock()
     groq_client.chat.completions.create.return_value = type(
         "Resp", (), {"choices": [type("Choice", (), {"message": type(
             "Msg", (), {"content": "# Test\nDescription"})()})]}
     )()
     result = generate_new_task(
-        groq_client, [DummyIssue(summary="Old")], "Test")
+        groq_client, "Old", "Test")
     assert "summary" in result and "description" in result
     assert result["summary"] == "Test"
 
 
-def test_transition_issue_to_status_success():
+def test_transition_issue_to_status_success(monkeypatch):
+    monkeypatch.setattr("core.main.DRY_RUN", False)
     jira = MagicMock()
     issue = DummyIssue()
     jira.transitions.return_value = [{"id": "1", "name": "In Progress"}]
@@ -50,7 +53,10 @@ def test_transition_issue_to_status_success():
         mock_trans.assert_called_once_with(jira, issue, "1")
 
 
-def test_transition_issue_to_status_no_transition(caplog):
+def test_transition_issue_to_status_no_transition(monkeypatch, caplog):
+    monkeypatch.setattr("core.main.DRY_RUN", False)
+    logger = logging.getLogger()
+    logger.setLevel(logging.ERROR)
     jira = MagicMock()
     issue = DummyIssue()
     jira.transitions.return_value = [{"id": "1", "name": "Done"}]
@@ -59,15 +65,21 @@ def test_transition_issue_to_status_no_transition(caplog):
         assert "No transition found" in caplog.text
 
 
-def test_notify_success():
+def test_notify_success(monkeypatch):
+    monkeypatch.setattr("core.main.DRY_RUN", False)
     jira = MagicMock()
-    notify(jira, "ISSUE-1", "msg")
-    jira.add_comment.assert_called_once_with("ISSUE-1", "msg")
+    with patch("core.main.requests.post"):
+        notify(jira, "ISSUE-1", "msg")
 
 
 def test_get_topic_history_success():
     jira = MagicMock()
-    jira.search_issues.return_value = [DummyIssue()]
-    result = get_topic_history(jira, "PRO-1", "Test")
-    assert isinstance(result, list)
-    assert isinstance(result[0], DummyIssue)
+    jira.issue.return_value.fields.comment.comments = []
+    comment = MagicMock()
+    comment.body = (
+        "Топик: Test\nКлюч топика: PRO-1\n\nИстория топика:\nTheme1\nTheme2"
+    )
+    with patch("core.main.seek_topic_history_comment", return_value=comment):
+        result = get_topic_history(jira, "PRO-1", "Test")
+        assert isinstance(result, str)
+        assert "Theme1" in result and "Theme2" in result

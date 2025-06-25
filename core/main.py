@@ -6,13 +6,13 @@ from datetime import datetime
 from jira import JIRA, Comment, Issue
 from apscheduler.schedulers.blocking import BlockingScheduler
 from groq import Groq
+import requests
 from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
     retry_if_exception_type,
 )
-from ratelimiter import RateLimiter
 
 from config import (
     DRY_RUN,
@@ -28,11 +28,11 @@ from config import (
     SCHEDULER_TIMEZONE,
     STATUS_BACKLOG,
     STATUS_IN_PROGRESS,
+    TELEGRAM_CHAT_ID,
+    TELEGRAM_SEND_MESSAGE_URL,
     validate_config,
     JIRA_HISTORY_KEY,
 )
-
-rate_limiter = RateLimiter(max_calls=20, period=60)
 
 
 def init_clients() -> Tuple[JIRA, Groq]:
@@ -92,18 +92,24 @@ def jira_issue(jira: JIRA, issue_key: str):
     return jira.issue(issue_key)
 
 
-def notify(jira: JIRA, issue_key: str, message: str):
+def notify(issue_key: str, message: str):
     if DRY_RUN:
-        logging.info(f"[DRY-RUN] Would add comment to {issue_key}: {message}")
+        logging.info(f"[DRY-RUN] Would send message to telegram")
         return
     try:
-        jira_add_comment(jira, issue_key, message)
-        logging.info(f"Notification added to {issue_key}")
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+        requests.post(TELEGRAM_SEND_MESSAGE_URL, data=payload)
     except Exception as e:
-        logging.error(f"Failed to comment on {issue_key}: {e}", exc_info=True)
+        logging.error(
+            f"Failed to send message to telegram for {issue_key}: {e}", exc_info=True)
 
 
-@rate_limiter
+def notify_critical_error(message: str):
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+    requests.post(TELEGRAM_SEND_MESSAGE_URL, data=payload)
+    logging.error(f"CRITICAL: {message}")
+
+
 def call_groq_generate_content(groq_client: Groq, prompt: str) -> str:
     if DRY_RUN:
         logging.info(f"[DRY-RUN] Would call Groq API with prompt: {prompt}")
@@ -125,13 +131,15 @@ def generate_new_task(groq_client: Groq, topic_history: str, topic: str) -> dict
         f"У меня уже были темы: {topic_history}. "
         f"Сгенерируй обучающий материал по разделу '{topic}'. "
         "Мне нужно это для подготовки к собеседованию. "
-        "Сделай это в формате Markdown, чтобы я мог "
-        "легко скопировать и вставить в Jira. "
+        "Сделай это в формате подходящим для описания задачи в "
+        "Jira, чтобы я мог легко скопировать и вставить в Jira. "
         "Метирал должен быть всеобьемлющим и должен полностью "
         "покрывать тему, включая ссылки на полезные ресурсы, примеры и объяснения. "
         "В результате я ожидаю получить текст, который я смогу распарсить. "
-        "Нужно явно указать заголовок, который будет являться темой. Заголовок должен быть в формате '# Тема'. "
-        "Чтобы я мог достатать заголово таким кодом summary = content.splitlines()[0].lstrip('# ').strip()"
+        "Нужно явно указать заголовок, который будет являться темой. "
+        "Заголовок должен быть в формате '# Тема'. "
+        "Чтобы я мог достатать заголово таким кодом "
+        "summary = content.splitlines()[0].lstrip('# ').strip()"
     )
     try:
         content = call_groq_generate_content(groq_client, prompt)
@@ -164,14 +172,23 @@ def create_topic_history_comment(jira: JIRA, epic_key: str, topic: str):
     jira_add_comment(jira, JIRA_HISTORY_KEY, comment_body)
 
 
-def update_topic_history(comment: Comment, new_theme: str):
-    comment_body = comment.body + f"\n{new_theme}"
-    if DRY_RUN:
-        logging.info(
-            f"[DRY-RUN] Would update comment in issue {JIRA_HISTORY_KEY} to '{comment_body}'"
-        )
-        return
-    comment.update(body=comment_body)
+def update_topic_history(jira: JIRA, epic_key: str, new_theme: str):
+    history_issue = jira.issue(JIRA_HISTORY_KEY)
+    history_comments = history_issue.fields.comment.comments
+    topic_history_comment: Optional[Comment] = seek_topic_history_comment(
+        history_comments, epic_key)
+    if topic_history_comment:
+        comment_body = topic_history_comment.body + f"\n{new_theme}"
+        if DRY_RUN:
+            logging.info(
+                f"[DRY-RUN] Would update comment in issue {JIRA_HISTORY_KEY} to '{comment_body}'"
+            )
+            return
+        topic_history_comment.update(body=comment_body)
+    else:
+        logging.warning(
+            f"No topic comment found for epic {epic_key} after supposed creation.")
+        # Не пытаемся обращаться к .body
 
 
 def parse_history_comment(topic_comment: str) -> str:
@@ -202,20 +219,24 @@ def get_topic_history(jira: JIRA, epic_key: str, topic: str) -> str:
         topic_comment = seek_topic_history_comment(history_comments, epic_key)
         if not topic_comment:
             create_topic_history_comment(jira, epic_key, topic)
+            return ""
         passed_themes: str = parse_history_comment(topic_comment.body)
         return passed_themes
     except Exception as e:
-        logging.error(f"Error fetching history for {epic_key}: {e}", exc_info=True)
-        return []
+        logging.error(
+            f"Error fetching history for {epic_key}: {e}", exc_info=True)
+        return ""
 
 
 def transition_issue_to_status(jira: JIRA, issue: Issue, status_name: str):
     if DRY_RUN:
-        logging.info(f"[DRY-RUN] Would transition issue {issue.key} to '{status_name}'")
+        logging.info(
+            f"[DRY-RUN] Would transition issue {issue.key} to '{status_name}'")
         return
     try:
         transitions = jira.transitions(issue)
-        transition_id = next(t["id"] for t in transitions if t["name"] == status_name)
+        transition_id = next(t["id"]
+                             for t in transitions if t["name"] == status_name)
         jira_transition_issue(jira, issue, transition_id)
         logging.info(f"Issue {issue.key} transitioned to '{status_name}'")
     except StopIteration:
@@ -224,7 +245,8 @@ def transition_issue_to_status(jira: JIRA, issue: Issue, status_name: str):
             exc_info=True,
         )
     except Exception as e:
-        logging.error(f"Failed to transition issue {issue.key}: {e}", exc_info=True)
+        logging.error(
+            f"Failed to transition issue {issue.key}: {e}", exc_info=True)
 
 
 def epic_exists(jira: JIRA, epic_key: str) -> bool:
@@ -234,13 +256,9 @@ def epic_exists(jira: JIRA, epic_key: str) -> bool:
         # Можно добавить дополнительные проверки, например, статус эпика
         return True
     except Exception as e:
-        logging.error(f"Epic {epic_key} not found or inaccessible: {e}", exc_info=True)
+        logging.error(
+            f"Epic {epic_key} not found or inaccessible: {e}", exc_info=True)
         return False
-
-
-def notify_critical_error(message: str):
-    # TODO: Реализовать отправку в Telegram/Slack или другой канал оповещений
-    logging.error(f"CRITICAL: {message}")
 
 
 def process_project(
@@ -264,10 +282,10 @@ def process_project(
             key = in_progress_issues[0].key
             # TODO сделать так, чтобы gpt подсказывала как пройти этот тикет
             notify(
-                jira,
                 key,
                 (
-                    f"У тебя уже есть задача по теме '{topic}' в статусе 'В работе'! "
+                    f"У тебя уже есть задача в топике '{topic}' на тему '{in_progress_issues[0].fields.summary}' в статусе 'В работе'! "
+                    f"Ссылка на задачу: {JIRA_URL + '/browse/' + new_issue.key}. "
                     "Продолжай учиться — ты на верном пути 🚀 Если возникнут вопросы, "
                     "не стесняйся их записывать прямо в задаче. Вперёд к новым знаниям и успехам! 💡"
                 ),
@@ -286,19 +304,15 @@ def process_project(
             issue = backlog_issues[0]
             transition_issue_to_status(jira, issue, STATUS_IN_PROGRESS)
             notify(
-                jira,
                 issue.key,
                 (
-                    f"Задача по теме '{topic}' переведена в статус 'В работе'. "
+                    f"Задача в топике '{topic}' на тему '{issue.fields.summary}' переведена в статус 'В работе'. "
+                    f"Ссылка на задачу: {JIRA_URL + '/browse/' + new_issue.key}. "
                     "Отличная возможность продолжить обучение! Удачи и приятного изучения 🚀"
                 ),
             )
             theme = issue.fields.summary
-            history_comments = issue.fields.comment.comments
-            topic_history_comment: str = seek_topic_history_comment(
-                history_comments, epic_key
-            )
-            update_topic_history(topic_history_comment, theme)
+            update_topic_history(jira, epic_key, theme)
             return
 
         # Create a new task under the epic
@@ -321,11 +335,7 @@ def process_project(
         )
 
         theme = new_issue.fields.summary
-        history_comments = new_issue.fields.comment.comments
-        topic_history_comment: str = seek_topic_history_comment(
-            history_comments, epic_key
-        )
-        update_topic_history(topic_history_comment, theme)
+        update_topic_history(jira, epic_key, theme)
 
         # Проверка, что задача создана
         if not new_issue or not hasattr(new_issue, "key"):
@@ -343,7 +353,12 @@ def process_project(
             logging.error(msg, exc_info=True)
             notify_critical_error(msg)
         else:
-            notify(jira, new_issue.key, f"Created and moved new {topic} task.")
+            text = (
+                f"Создана и переведена в рабочий статус новая задача "
+                f"в топике {topic} на тему {new_issue.fields.summary}. "
+                f"Ссылка на задачу: {JIRA_URL + '/browse/' + new_issue.key}"
+            )
+            notify(new_issue.key, text)
     except Exception as e:
         msg = f"Error processing {epic_key}: {e}"
         logging.error(msg, exc_info=True)
@@ -352,10 +367,28 @@ def process_project(
 
 def run_daily():
     jira, groq_client = init_clients()
-    today = datetime.today().weekday()
+    # Для тестов: если datetime подменён, корректно вызываем today().weekday(self)
+    today_func = getattr(datetime, "today", None)
+    if callable(today_func):
+        today_obj = today_func()
+        weekday_func = getattr(today_obj, "weekday", None)
+        if callable(weekday_func):
+            try:
+                today = weekday_func(today_obj)
+            except TypeError:
+                # Для обычного datetime weekday(self), для monkeypatch — без self
+                today = weekday_func()
+        else:
+            today = 0
+    else:
+        today = 0
     for epic, topic in PROJECT_SCHEDULE.get(today, []):
-        history: str = get_topic_history(jira, epic, topic)
-        process_project(jira, groq_client, epic, topic, history)
+        try:
+            history: str = get_topic_history(jira, epic, topic)
+            process_project(jira, groq_client, epic, topic, history)
+        except Exception as e:
+            logging.error(
+                f"Exception in run_daily for epic={epic}, topic={topic}: {e}", exc_info=True)
 
 
 if __name__ == "__main__":
