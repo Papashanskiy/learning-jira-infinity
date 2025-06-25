@@ -286,6 +286,10 @@ def process_project(jira: JIRA, groq_client: Groq, epic_key: str, topic: str, hi
                     "Отличная возможность продолжить обучение! Удачи и приятного изучения 🚀"
                 )
             )
+            theme = issue.fields.summary
+            history_comments = issue.fields.comment.comments
+            topic_history_comment: str = seek_topic_history_comment(history_comments, epic_key)
+            update_topic_history(topic_history_comment, theme)
             return
 
         # Create a new task under the epic
@@ -302,6 +306,12 @@ def process_project(jira: JIRA, groq_client: Groq, epic_key: str, topic: str, hi
             'description': task['description'],
             'issuetype': {'name': 'Task'},
         })
+        
+        
+        theme = new_issue.fields.summary
+        history_comments = new_issue.fields.comment.comments
+        topic_history_comment: str = seek_topic_history_comment(history_comments, epic_key)
+        update_topic_history(topic_history_comment, theme)
 
         # Проверка, что задача создана
         if not new_issue or not hasattr(new_issue, "key"):
