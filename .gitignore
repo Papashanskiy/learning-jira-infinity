@@ -1,5 +1,6 @@
 venv/
 .env
+__pycache__
 __pycache__/
 *.pyc
 *.pyo
@@ -14,4 +15,10 @@ build/
 *.whl
 *.coverage
 .vscode/
+.vscode
 *.json
+.vscode/launch.json
+core/__pycache__/__init__.cpython-310.pyc
+core/__pycache__/main.cpython-310.pyc
+lounch.json
+.vscode/launch.json
