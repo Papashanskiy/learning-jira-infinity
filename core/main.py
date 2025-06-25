@@ -1,60 +1,38 @@
+import pytz
 import logging
-from typing import List
+
+from typing import List, Optional, Tuple
 from datetime import datetime
-from jira import JIRA, Issue
+from jira import JIRA, Comment, Issue
 from apscheduler.schedulers.blocking import BlockingScheduler
-from dotenv import load_dotenv
 from groq import Groq
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-import time
-import pytz
+from ratelimiter import RateLimiter
 
-# Load environment variables from .env file
-load_dotenv()
+from config import (
+    DRY_RUN, 
+    GROQ_API_KEY, 
+    JIRA_PROJECT_KEY, 
+    JIRA_TOKEN, 
+    JIRA_URL, 
+    JIRA_USER, 
+    PROJECT_SCHEDULE, 
+    SCHEDULER_DAYS, 
+    SCHEDULER_HOUR, 
+    SCHEDULER_MINUTE, 
+    SCHEDULER_TIMEZONE, 
+    STATUS_BACKLOG, 
+    STATUS_IN_PROGRESS, 
+    validate_config,
+    JIRA_HISTORY_KEY
+)
 
-# Jira and OpenAI configuration
-JIRA_URL = os.getenv("JIRA_URL")
-JIRA_USER = os.getenv("JIRA_USER")
-JIRA_TOKEN = os.getenv("JIRA_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-JIRA_BOARD_ID = int(os.getenv("JIRA_BOARD_ID"))
-JIRA_PROJECT_KEY = os.getenv("JIRA_PROJECT_KEY", "PRO")  # Jira project key
-
-# Status names in Jira workflow
-STATUS_IN_PROGRESS = "In Progress"
-STATUS_BACKLOG = "Backlog"
-STATUS_DONE = "Done"
-
-# Schedule: weekday -> list of (epic, topic)
-PROJECT_SCHEDULE = {
-    0: [("PRO-1", "Английский"), ("PRO-3", "Алгоритмы и структуры данных")],
-    1: [("PRO-1", "Английский"), ("PRO-4", "Систем дизайн")],
-    2: [("PRO-1", "Английский"), ("PRO-5", "Поведенческие вопросы")],
-    3: [("PRO-1", "Английский"), ("PRO-6", "Python")],
-    4: [("PRO-1", "Английский"), ("PRO-7", "ML Ops и DevOps")],
-}
-
-# Новые переменные окружения для планировщика
-SCHEDULER_TIMEZONE = os.getenv("SCHEDULER_TIMEZONE", "Asia/Almaty")
-SCHEDULER_HOUR = int(os.getenv("SCHEDULER_HOUR", 8))
-SCHEDULER_MINUTE = int(os.getenv("SCHEDULER_MINUTE", 0))
-# строка, например "mon-fri" или "0-4"
-SCHEDULER_DAYS = os.getenv("SCHEDULER_DAYS", "mon-fri")
-
-DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
+rate_limiter = RateLimiter(max_calls=20, period=60)
 
 
-def validate_config():
-    required = [JIRA_URL, JIRA_USER, JIRA_TOKEN, GROQ_API_KEY, JIRA_BOARD_ID]
-    if not all(required):
-        missing = [name for name, val in zip(
-            ["JIRA_URL", "JIRA_USER", "JIRA_TOKEN", "GROQ_API_KEY", "JIRA_BOARD_ID"], required) if not val]
-        raise ValueError(f"Missing env vars: {', '.join(missing)}")
-
-
-def init_clients() -> JIRA:
+def init_clients() -> Tuple[JIRA, Groq]:
     validate_config()
-    jira = JIRA(server=JIRA_URL, token_auth=(JIRA_USER, JIRA_TOKEN))
+    jira = JIRA(server=JIRA_URL, basic_auth=(JIRA_USER, JIRA_TOKEN))
     groq_client = Groq(api_key=GROQ_API_KEY)
     return jira, groq_client
 
@@ -120,6 +98,7 @@ def notify(jira: JIRA, issue_key: str, message: str):
         logging.error(f"Failed to comment on {issue_key}: {e}", exc_info=True)
 
 
+@rate_limiter
 def call_groq_generate_content(groq_client: Groq, prompt: str) -> str:
     if DRY_RUN:
         logging.info(f"[DRY-RUN] Would call Groq API with prompt: {prompt}")
@@ -136,10 +115,9 @@ def call_groq_generate_content(groq_client: Groq, prompt: str) -> str:
     return chat_completion.choices[0].message.content
 
 
-def generate_new_task(groq_client: Groq, topic_history: List[Issue], topic: str) -> dict:
-    history_summary = [h.summary for h in topic_history]
+def generate_new_task(groq_client: Groq, topic_history: str, topic: str) -> dict:
     prompt = (
-        f"У меня уже были темы: {', '.join(history_summary)}. "
+        f"У меня уже были темы: {topic_history}. "
         f"Сгенерируй обучающий материал по разделу '{topic}'. "
         "Мне нужно это для подготовки к собеседованию. "
         "Сделай это в формате Markdown, чтобы я мог "
@@ -159,16 +137,64 @@ def generate_new_task(groq_client: Groq, topic_history: List[Issue], topic: str)
         raise
 
 
-def get_topic_history(jira: JIRA, epic_key: str, topic: str) -> List[Issue]:
+def seek_topic_history_comment(comments: List[Comment], epic_key: str) -> Optional[Comment]:
+    for comment in comments:
+        lines = comment.body.splitlines()
+        for line in lines:
+            if 'Ключ топика' in line:
+                if epic_key in line:
+                    return comment
+                break
+
+
+def create_topic_history_comment(jira: JIRA, epic_key: str, topic: str):
+    comment_body = f'Топик: {topic}\nКлюч топика: {epic_key}\n\nИстория топика:'
+    if DRY_RUN:
+        logging.info(
+            f"[DRY-RUN] Would create comment in issue {JIRA_HISTORY_KEY} with body'{comment_body}'")
+        return
+    jira_add_comment(jira, JIRA_HISTORY_KEY, comment_body)
+
+
+def update_topic_history(comment: Comment, new_theme: str):
+    comment_body = comment.body + f'\n{new_theme}'
+    if DRY_RUN:
+        logging.info(
+            f"[DRY-RUN] Would update comment in issue {JIRA_HISTORY_KEY} to '{comment_body}'")
+        return
+    comment.update(body=comment_body)
+
+
+def parse_history_comment(topic_comment: str) -> str:
+    """
+    Извлекает список тем из секции "История топика:" в переданном тексте.
+    Если секция не найдена, возвращает пустую строку.
+    """
+    lines = topic_comment.splitlines()
+    result_lines = []
+    recording = False
+
+    for line in lines:
+        stripped = line.strip()
+        if recording:
+            if stripped:
+                result_lines.append(stripped)
+        elif stripped.startswith("История топика"):
+            # Как только встречаем метку, включаем сбор последующих строк
+            recording = True
+
+    return "\n".join(result_lines)
+
+
+def get_topic_history(jira: JIRA, epic_key: str, topic: str) -> str:
     try:
-        jql = (
-            f'project = {JIRA_PROJECT_KEY} '
-            f'AND status = "{STATUS_DONE}" '
-            f'AND parent = {epic_key} '
-            'ORDER BY updated DESC'
-        )
-        issues = jira_search_issues(jira, jql, maxResults=1000)
-        return [issue for issue in issues]
+        history_issue = jira.issue(JIRA_HISTORY_KEY)
+        history_comments = history_issue.fields.comment.comments
+        topic_comment = seek_topic_history_comment(history_comments, epic_key)
+        if not topic_comment:
+            create_topic_history_comment(jira, epic_key, topic)
+        passed_themes: str = parse_history_comment(topic_comment.body)
+        return passed_themes
     except Exception as e:
         logging.error(
             f"Error fetching history for {epic_key}: {e}", exc_info=True)
@@ -212,7 +238,7 @@ def notify_critical_error(message: str):
     logging.error(f"CRITICAL: {message}")
 
 
-def process_project(jira: JIRA, groq_client: Groq, epic_key: str, topic: str, history: List[Issue]):
+def process_project(jira: JIRA, groq_client: Groq, epic_key: str, topic: str, history: str):
     try:
         if not epic_exists(jira, epic_key):
             msg = f"Skipping topic '{topic}' because epic '{epic_key}' does not exist or is inaccessible."
@@ -226,9 +252,9 @@ def process_project(jira: JIRA, groq_client: Groq, epic_key: str, topic: str, hi
             f'AND status = "{STATUS_IN_PROGRESS}" '
             f'AND parent = {epic_key}'
         )
-        ip_issues = jira_search_issues(jira, jql_ip)
-        if ip_issues:
-            key = ip_issues[0].key
+        in_progress_issues = jira_search_issues(jira, jql_ip)
+        if in_progress_issues:
+            key = in_progress_issues[0].key
             # TODO сделать так, чтобы gpt подсказывала как пройти этот тикет
             notify(
                 jira,
@@ -248,9 +274,9 @@ def process_project(jira: JIRA, groq_client: Groq, epic_key: str, topic: str, hi
             f'AND parent = {epic_key} '
             'ORDER BY priority DESC'
         )
-        bl_issues = jira_search_issues(jira, jql_bl)
-        if bl_issues:
-            issue = bl_issues[0]
+        backlog_issues = jira_search_issues(jira, jql_bl)
+        if backlog_issues:
+            issue = backlog_issues[0]
             transition_issue_to_status(jira, issue, STATUS_IN_PROGRESS)
             notify(
                 jira,
@@ -260,20 +286,6 @@ def process_project(jira: JIRA, groq_client: Groq, epic_key: str, topic: str, hi
                     "Отличная возможность продолжить обучение! Удачи и приятного изучения 🚀"
                 )
             )
-            return
-
-        # Idempotency: check if a similar task already exists (not Done)
-        jql_check = (
-            f'project = {JIRA_PROJECT_KEY} '
-            f'AND summary ~ "{topic}" '
-            f'AND parent = {epic_key} '
-            f'AND status != "{STATUS_DONE}"'
-        )
-        existing = jira_search_issues(jira, jql_check)
-        if existing:
-            msg = f"Task for topic '{topic}' already exists in epic '{epic_key}', skipping creation."
-            logging.info(msg)
-            # Можно отправлять критические уведомления, если это важно
             return
 
         # Create a new task under the epic
@@ -288,7 +300,7 @@ def process_project(jira: JIRA, groq_client: Groq, epic_key: str, topic: str, hi
             'parent': {'key': epic_key},
             'summary': task['summary'],
             'description': task['description'],
-            'issuetype': {'name': 'Task'}
+            'issuetype': {'name': 'Task'},
         })
 
         # Проверка, что задача создана
@@ -318,7 +330,7 @@ def run_daily():
     jira, groq_client = init_clients()
     today = datetime.today().weekday()
     for epic, topic in PROJECT_SCHEDULE.get(today, []):
-        history = get_topic_history(jira, epic, topic)
+        history: str = get_topic_history(jira, epic, topic)
         process_project(jira, groq_client, epic, topic, history)
 
 
