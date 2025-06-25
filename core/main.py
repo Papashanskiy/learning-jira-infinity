@@ -6,25 +6,30 @@ from datetime import datetime
 from jira import JIRA, Comment, Issue
 from apscheduler.schedulers.blocking import BlockingScheduler
 from groq import Groq
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+)
 from ratelimiter import RateLimiter
 
 from config import (
-    DRY_RUN, 
-    GROQ_API_KEY, 
-    JIRA_PROJECT_KEY, 
-    JIRA_TOKEN, 
-    JIRA_URL, 
-    JIRA_USER, 
-    PROJECT_SCHEDULE, 
-    SCHEDULER_DAYS, 
-    SCHEDULER_HOUR, 
-    SCHEDULER_MINUTE, 
-    SCHEDULER_TIMEZONE, 
-    STATUS_BACKLOG, 
-    STATUS_IN_PROGRESS, 
+    DRY_RUN,
+    GROQ_API_KEY,
+    JIRA_PROJECT_KEY,
+    JIRA_TOKEN,
+    JIRA_URL,
+    JIRA_USER,
+    PROJECT_SCHEDULE,
+    SCHEDULER_DAYS,
+    SCHEDULER_HOUR,
+    SCHEDULER_MINUTE,
+    SCHEDULER_TIMEZONE,
+    STATUS_BACKLOG,
+    STATUS_IN_PROGRESS,
     validate_config,
-    JIRA_HISTORY_KEY
+    JIRA_HISTORY_KEY,
 )
 
 rate_limiter = RateLimiter(max_calls=20, period=60)
@@ -41,7 +46,7 @@ def init_clients() -> Tuple[JIRA, Groq]:
     stop=stop_after_attempt(5),
     wait=wait_exponential(multiplier=2, min=2, max=30),
     retry=retry_if_exception_type(Exception),
-    reraise=True
+    reraise=True,
 )
 def jira_search_issues(jira: JIRA, jql: str, maxResults: int = 1000):
     return jira.search_issues(jql, maxResults=maxResults)
@@ -51,7 +56,7 @@ def jira_search_issues(jira: JIRA, jql: str, maxResults: int = 1000):
     stop=stop_after_attempt(5),
     wait=wait_exponential(multiplier=2, min=2, max=30),
     retry=retry_if_exception_type(Exception),
-    reraise=True
+    reraise=True,
 )
 def jira_create_issue(jira: JIRA, fields: dict):
     return jira.create_issue(fields=fields)
@@ -61,7 +66,7 @@ def jira_create_issue(jira: JIRA, fields: dict):
     stop=stop_after_attempt(5),
     wait=wait_exponential(multiplier=2, min=2, max=30),
     retry=retry_if_exception_type(Exception),
-    reraise=True
+    reraise=True,
 )
 def jira_transition_issue(jira: JIRA, issue: Issue, transition_id):
     return jira.transition_issue(issue, transition_id)
@@ -71,7 +76,7 @@ def jira_transition_issue(jira: JIRA, issue: Issue, transition_id):
     stop=stop_after_attempt(5),
     wait=wait_exponential(multiplier=2, min=2, max=30),
     retry=retry_if_exception_type(Exception),
-    reraise=True
+    reraise=True,
 )
 def jira_add_comment(jira: JIRA, issue_key: str, message: str):
     return jira.add_comment(issue_key, message)
@@ -81,7 +86,7 @@ def jira_add_comment(jira: JIRA, issue_key: str, message: str):
     stop=stop_after_attempt(5),
     wait=wait_exponential(multiplier=2, min=2, max=30),
     retry=retry_if_exception_type(Exception),
-    reraise=True
+    reraise=True,
 )
 def jira_issue(jira: JIRA, issue_key: str):
     return jira.issue(issue_key)
@@ -130,37 +135,41 @@ def generate_new_task(groq_client: Groq, topic_history: str, topic: str) -> dict
     )
     try:
         content = call_groq_generate_content(groq_client, prompt)
-        summary = content.splitlines()[0].lstrip('# ').strip()
+        summary = content.splitlines()[0].lstrip("# ").strip()
         return {"summary": summary, "description": content}
     except Exception as e:
         logging.error(f"Groq API error after retries: {e}", exc_info=True)
         raise
 
 
-def seek_topic_history_comment(comments: List[Comment], epic_key: str) -> Optional[Comment]:
+def seek_topic_history_comment(
+    comments: List[Comment], epic_key: str
+) -> Optional[Comment]:
     for comment in comments:
         lines = comment.body.splitlines()
         for line in lines:
-            if 'Ключ топика' in line:
+            if "Ключ топика" in line:
                 if epic_key in line:
                     return comment
                 break
 
 
 def create_topic_history_comment(jira: JIRA, epic_key: str, topic: str):
-    comment_body = f'Топик: {topic}\nКлюч топика: {epic_key}\n\nИстория топика:'
+    comment_body = f"Топик: {topic}\nКлюч топика: {epic_key}\n\nИстория топика:"
     if DRY_RUN:
         logging.info(
-            f"[DRY-RUN] Would create comment in issue {JIRA_HISTORY_KEY} with body'{comment_body}'")
+            f"[DRY-RUN] Would create comment in issue {JIRA_HISTORY_KEY} with body'{comment_body}'"
+        )
         return
     jira_add_comment(jira, JIRA_HISTORY_KEY, comment_body)
 
 
 def update_topic_history(comment: Comment, new_theme: str):
-    comment_body = comment.body + f'\n{new_theme}'
+    comment_body = comment.body + f"\n{new_theme}"
     if DRY_RUN:
         logging.info(
-            f"[DRY-RUN] Would update comment in issue {JIRA_HISTORY_KEY} to '{comment_body}'")
+            f"[DRY-RUN] Would update comment in issue {JIRA_HISTORY_KEY} to '{comment_body}'"
+        )
         return
     comment.update(body=comment_body)
 
@@ -196,29 +205,26 @@ def get_topic_history(jira: JIRA, epic_key: str, topic: str) -> str:
         passed_themes: str = parse_history_comment(topic_comment.body)
         return passed_themes
     except Exception as e:
-        logging.error(
-            f"Error fetching history for {epic_key}: {e}", exc_info=True)
+        logging.error(f"Error fetching history for {epic_key}: {e}", exc_info=True)
         return []
 
 
 def transition_issue_to_status(jira: JIRA, issue: Issue, status_name: str):
     if DRY_RUN:
-        logging.info(
-            f"[DRY-RUN] Would transition issue {issue.key} to '{status_name}'")
+        logging.info(f"[DRY-RUN] Would transition issue {issue.key} to '{status_name}'")
         return
     try:
         transitions = jira.transitions(issue)
-        transition_id = next(
-            t['id'] for t in transitions if t['name'] == status_name
-        )
+        transition_id = next(t["id"] for t in transitions if t["name"] == status_name)
         jira_transition_issue(jira, issue, transition_id)
         logging.info(f"Issue {issue.key} transitioned to '{status_name}'")
     except StopIteration:
         logging.error(
-            f"No transition found for status '{status_name}' on issue {issue.key}", exc_info=True)
+            f"No transition found for status '{status_name}' on issue {issue.key}",
+            exc_info=True,
+        )
     except Exception as e:
-        logging.error(
-            f"Failed to transition issue {issue.key}: {e}", exc_info=True)
+        logging.error(f"Failed to transition issue {issue.key}: {e}", exc_info=True)
 
 
 def epic_exists(jira: JIRA, epic_key: str) -> bool:
@@ -228,8 +234,7 @@ def epic_exists(jira: JIRA, epic_key: str) -> bool:
         # Можно добавить дополнительные проверки, например, статус эпика
         return True
     except Exception as e:
-        logging.error(
-            f"Epic {epic_key} not found or inaccessible: {e}", exc_info=True)
+        logging.error(f"Epic {epic_key} not found or inaccessible: {e}", exc_info=True)
         return False
 
 
@@ -238,7 +243,9 @@ def notify_critical_error(message: str):
     logging.error(f"CRITICAL: {message}")
 
 
-def process_project(jira: JIRA, groq_client: Groq, epic_key: str, topic: str, history: str):
+def process_project(
+    jira: JIRA, groq_client: Groq, epic_key: str, topic: str, history: str
+):
     try:
         if not epic_exists(jira, epic_key):
             msg = f"Skipping topic '{topic}' because epic '{epic_key}' does not exist or is inaccessible."
@@ -248,9 +255,9 @@ def process_project(jira: JIRA, groq_client: Groq, epic_key: str, topic: str, hi
 
         # Check "In Progress" tasks in the epic
         jql_ip = (
-            f'project = {JIRA_PROJECT_KEY} '
+            f"project = {JIRA_PROJECT_KEY} "
             f'AND status = "{STATUS_IN_PROGRESS}" '
-            f'AND parent = {epic_key}'
+            f"AND parent = {epic_key}"
         )
         in_progress_issues = jira_search_issues(jira, jql_ip)
         if in_progress_issues:
@@ -263,16 +270,16 @@ def process_project(jira: JIRA, groq_client: Groq, epic_key: str, topic: str, hi
                     f"У тебя уже есть задача по теме '{topic}' в статусе 'В работе'! "
                     "Продолжай учиться — ты на верном пути 🚀 Если возникнут вопросы, "
                     "не стесняйся их записывать прямо в задаче. Вперёд к новым знаниям и успехам! 💡"
-                )
+                ),
             )
             return
 
         # Move backlog task to In Progress
         jql_bl = (
-            f'project = {JIRA_PROJECT_KEY} '
+            f"project = {JIRA_PROJECT_KEY} "
             f'AND status = "{STATUS_BACKLOG}" '
-            f'AND parent = {epic_key} '
-            'ORDER BY priority DESC'
+            f"AND parent = {epic_key} "
+            "ORDER BY priority DESC"
         )
         backlog_issues = jira_search_issues(jira, jql_bl)
         if backlog_issues:
@@ -284,11 +291,13 @@ def process_project(jira: JIRA, groq_client: Groq, epic_key: str, topic: str, hi
                 (
                     f"Задача по теме '{topic}' переведена в статус 'В работе'. "
                     "Отличная возможность продолжить обучение! Удачи и приятного изучения 🚀"
-                )
+                ),
             )
             theme = issue.fields.summary
             history_comments = issue.fields.comment.comments
-            topic_history_comment: str = seek_topic_history_comment(history_comments, epic_key)
+            topic_history_comment: str = seek_topic_history_comment(
+                history_comments, epic_key
+            )
             update_topic_history(topic_history_comment, theme)
             return
 
@@ -296,21 +305,26 @@ def process_project(jira: JIRA, groq_client: Groq, epic_key: str, topic: str, hi
         task = generate_new_task(groq_client, history, topic)
         if DRY_RUN:
             logging.info(
-                f"[DRY-RUN] Would create issue in epic '{epic_key}' with summary '{task['summary']}'")
+                f"[DRY-RUN] Would create issue in epic '{epic_key}' with summary '{task['summary']}'"
+            )
             return
 
-        new_issue = jira_create_issue(jira, {
-            'project': {'key': epic_key.split('-')[0]},
-            'parent': {'key': epic_key},
-            'summary': task['summary'],
-            'description': task['description'],
-            'issuetype': {'name': 'Task'},
-        })
-        
-        
+        new_issue = jira_create_issue(
+            jira,
+            {
+                "project": {"key": epic_key.split("-")[0]},
+                "parent": {"key": epic_key},
+                "summary": task["summary"],
+                "description": task["description"],
+                "issuetype": {"name": "Task"},
+            },
+        )
+
         theme = new_issue.fields.summary
         history_comments = new_issue.fields.comment.comments
-        topic_history_comment: str = seek_topic_history_comment(history_comments, epic_key)
+        topic_history_comment: str = seek_topic_history_comment(
+            history_comments, epic_key
+        )
         update_topic_history(topic_history_comment, theme)
 
         # Проверка, что задача создана
@@ -345,17 +359,18 @@ def run_daily():
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO,
-                        format='%(asctime)s - %(levelname)s - %(message)s')
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    )
     validate_config()
     scheduler = BlockingScheduler(timezone=pytz.timezone(SCHEDULER_TIMEZONE))
     scheduler.add_job(
         run_daily,
-        'cron',
+        "cron",
         day_of_week=SCHEDULER_DAYS,
         hour=SCHEDULER_HOUR,
         minute=SCHEDULER_MINUTE,
-        misfire_grace_time=3600
+        misfire_grace_time=3600,
     )
     logging.info("Starting Jira automation...")
     scheduler.start()
