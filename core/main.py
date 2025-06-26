@@ -14,7 +14,7 @@ from tenacity import (
     retry_if_exception_type,
 )
 
-from core.config import (
+from config import (
     DRY_RUN,
     GROQ_API_KEY,
     JIRA_PROJECT_KEY,
