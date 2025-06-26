@@ -49,7 +49,6 @@ def test_process_project_in_progress_exists(mock_search, mock_epic_exists, mock_
     mock_search.side_effect = [[issue], []]
     main.process_project(mock_jira, mock_groq, epic_key, topic, history)
     mock_notify.assert_called_once_with(
-        mock_jira,
         issue.key,
         ANY
     )
@@ -75,7 +74,6 @@ def test_process_project_backlog_exists(
     mock_update_history.assert_called_once_with(
         mock_jira, epic_key, "Backlog summary")
     mock_notify.assert_called_once_with(
-        mock_jira,
         backlog_issue.key,
         ANY
     )
@@ -113,7 +111,7 @@ def test_process_project_creates_new_issue(
         mock_jira, epic_key, "New summary")
     mock_transition.assert_called_once_with(
         mock_jira, new_issue, main.STATUS_IN_PROGRESS)
-    mock_notify.assert_called_once_with(mock_jira, new_issue.key, ANY)
+    mock_notify.assert_called_once_with(new_issue.key, ANY)
 
 
 @patch("core.main.notify_critical_error")

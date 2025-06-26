@@ -67,9 +67,8 @@ def test_transition_issue_to_status_no_transition(monkeypatch, caplog):
 
 def test_notify_success(monkeypatch):
     monkeypatch.setattr("core.main.DRY_RUN", False)
-    jira = MagicMock()
     with patch("core.main.requests.post"):
-        notify(jira, "ISSUE-1", "msg")
+        notify("ISSUE-1", "msg")
 
 
 def test_get_topic_history_success():
