@@ -92,6 +92,16 @@ def jira_issue(jira: JIRA, issue_key: str):
     return jira.issue(issue_key)
 
 
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=2, min=2, max=30),
+    retry=retry_if_exception_type(Exception),
+    reraise=True,
+)
+def jira_update_issue(issue: Issue, issue_fields):
+    return issue.update(fields=issue_fields)
+
+
 def notify(issue_key: str, message: str):
     if DRY_RUN:
         logging.info(f"[DRY-RUN] Would send message to telegram")
@@ -105,6 +115,10 @@ def notify(issue_key: str, message: str):
 
 
 def notify_critical_error(message: str):
+    if DRY_RUN:
+        logging.info(
+            f"[DRY-RUN] Would send CRITICAL message to telegram: {message}")
+        return
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
     requests.post(TELEGRAM_SEND_MESSAGE_URL, data=payload)
     logging.error(f"CRITICAL: {message}")
@@ -135,6 +149,35 @@ def generate_new_task(groq_client: Groq, topic_history: str, topic: str) -> dict
         "Jira, чтобы я мог легко скопировать и вставить в Jira. "
         "Метирал должен быть всеобьемлющим и должен полностью "
         "покрывать тему, включая ссылки на полезные ресурсы, примеры и объяснения. "
+        "Мне важно сформировать навык глубоких ответов на вопросы интервьюера, "
+        "в связи с чем так же покажи мне как могут выглядеть "
+        "глубокие ответы на вопросы из этого топика. "
+        "В результате я ожидаю получить текст, который я смогу распарсить. "
+        "Нужно явно указать заголовок, который будет являться темой. "
+        "Заголовок должен быть в формате '# Тема'. "
+        "Чтобы я мог достатать заголово таким кодом "
+        "summary = content.splitlines()[0].lstrip('# ').strip()"
+    )
+    try:
+        content = call_groq_generate_content(groq_client, prompt)
+        summary = content.splitlines()[0].lstrip("# ").strip()
+        return {"summary": summary, "description": content}
+    except Exception as e:
+        logging.error(f"Groq API error after retries: {e}", exc_info=True)
+        raise
+
+
+def generate_description_for_existing_task(groq_client: Groq, topic: str, theme: str) -> dict:
+    prompt = (
+        f"Сгенерируй обучающий материал по разделу '{topic}' на тему '{theme}'. "
+        "Мне нужно это для подготовки к собеседованию. "
+        "Сделай это в формате подходящим для описания задачи в "
+        "Jira, чтобы я мог легко скопировать и вставить в Jira. "
+        "Метирал должен быть всеобьемлющим и должен полностью "
+        "покрывать тему, включая ссылки на полезные ресурсы, примеры и объяснения. "
+        "Мне важно сформировать навык глубоких ответов на вопросы интервьюера, "
+        "в связи с чем так же покажи мне как могут выглядеть "
+        "глубокие ответы на вопросы из этого топика. "
         "В результате я ожидаю получить текст, который я смогу распарсить. "
         "Нужно явно указать заголовок, который будет являться темой. "
         "Заголовок должен быть в формате '# Тема'. "
@@ -302,7 +345,26 @@ def process_project(
         backlog_issues = jira_search_issues(jira, jql_bl)
         if backlog_issues:
             issue = backlog_issues[0]
-            transition_issue_to_status(jira, issue, STATUS_IN_PROGRESS)
+            if DRY_RUN:
+                logging.info(
+                    "[DRY-RUN] Would update issue status in epic "
+                    f"'{epic_key}' with summary '{task['summary']}' "
+                    f"from '{issue.fields.status}' to '{STATUS_IN_PROGRESS}'"
+                )
+            else:
+                transition_issue_to_status(jira, issue, STATUS_IN_PROGRESS)
+            if not issue.fields.description:
+                existed_task = generate_description_for_existing_task(
+                    groq_client, topic, issue.fields.summary)
+                if DRY_RUN:
+                    logging.info(
+                        "[DRY-RUN] Would update issue description in epic "
+                        f"'{epic_key}' with summary '{task['summary']}' to "
+                        f"{existed_task['description']}"
+                    )
+                else:
+                    jira_update_issue(
+                        issue, {'description': existed_task['description']})
             notify(
                 issue.key,
                 (
