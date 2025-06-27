@@ -12,6 +12,7 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
     retry_if_exception_type,
+    retry_if_exception,
 )
 
 from config import (
@@ -124,20 +125,42 @@ def notify_critical_error(message: str):
     logging.error(f"CRITICAL: {message}")
 
 
+def is_groq_notfound_error(e):
+    return hasattr(e, "__class__") and e.__class__.__name__ == "NotFoundError"
+
+
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=2, min=2, max=30),
+    retry=(
+        retry_if_exception_type(Exception) &
+        retry_if_exception(lambda e: is_groq_notfound_error(e)
+                           or isinstance(e, Exception))
+    ),
+    reraise=True,
+)
 def call_groq_generate_content(groq_client: Groq, prompt: str) -> str:
     if DRY_RUN:
         logging.info(f"[DRY-RUN] Would call Groq API with prompt: {prompt}")
         return "# DRY-RUN\nОписание задачи (DRY-RUN)"
-    chat_completion = groq_client.chat.completions.create(
-        messages=[
-            {
-                "role": "user",
-                "content": prompt,
-            }
-        ],
-        model="meta-llama/llama-4-scout-17b-16e-instruct",
-    )
-    return chat_completion.choices[0].message.content
+    try:
+        chat_completion = groq_client.chat.completions.create(
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+        )
+        return chat_completion.choices[0].message.content
+    except Exception as e:
+        # Специальная обработка NotFoundError от groq
+        if is_groq_notfound_error(e):
+            logging.error(f"Groq API NotFoundError: {e}", exc_info=True)
+            # Пробрасываем исключение, чтобы tenacity сделал retry
+            raise
+        raise
 
 
 def generate_new_task(groq_client: Groq, topic_history: str, topic: str) -> dict:
@@ -163,6 +186,13 @@ def generate_new_task(groq_client: Groq, topic_history: str, topic: str) -> dict
         summary = content.splitlines()[0].lstrip("# ").strip()
         return {"summary": summary, "description": content}
     except Exception as e:
+        # Если это NotFoundError, возвращаем заглушку, чтобы не падал процесс
+        if hasattr(e, "__class__") and e.__class__.__name__ == "NotFoundError":
+            summary = "Ошибка Groq API"
+            description = "# Ошибка Groq API: модель не найдена или недоступна.\nПожалуйста, проверьте настройки модели или обратитесь к администратору."
+            logging.error(
+                f"Groq NotFoundError in generate_new_task: {e}", exc_info=True)
+            return {"summary": summary, "description": description}
         logging.error(f"Groq API error after retries: {e}", exc_info=True)
         raise
 
@@ -189,6 +219,12 @@ def generate_description_for_existing_task(groq_client: Groq, topic: str, theme:
         summary = content.splitlines()[0].lstrip("# ").strip()
         return {"summary": summary, "description": content}
     except Exception as e:
+        if hasattr(e, "__class__") and e.__class__.__name__ == "NotFoundError":
+            summary = "Ошибка Groq API"
+            description = "# Ошибка Groq API: модель не найдена или недоступна.\nПожалуйста, проверьте настройки модели или обратитесь к администратору."
+            logging.error(
+                f"Groq NotFoundError in generate_description_for_existing_task: {e}", exc_info=True)
+            return {"summary": summary, "description": description}
         logging.error(f"Groq API error after retries: {e}", exc_info=True)
         raise
 
