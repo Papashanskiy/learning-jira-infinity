@@ -18,6 +18,7 @@ from tenacity import (
 from config import (
     DRY_RUN,
     GROQ_API_KEY,
+    GROQ_MODEL,
     JIRA_PROJECT_KEY,
     JIRA_TOKEN,
     JIRA_URL,
@@ -151,7 +152,7 @@ def call_groq_generate_content(groq_client: Groq, prompt: str) -> str:
                     "content": prompt,
                 }
             ],
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            model=GROQ_MODEL,
         )
         return chat_completion.choices[0].message.content
     except Exception as e:

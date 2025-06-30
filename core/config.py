@@ -15,6 +15,8 @@ JIRA_HISTORY_KEY = os.getenv("JIRA_HISTORY_KEY")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
+GROQ_MODEL = os.getenv("GROQ_MODEL", default="meta-llama/llama-guard-4-12b")
+
 # Status names in Jira workflow
 STATUS_IN_PROGRESS = "In Progress"
 STATUS_BACKLOG = "Backlog"
