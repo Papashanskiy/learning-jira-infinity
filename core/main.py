@@ -377,7 +377,7 @@ def process_project(
             f"project = {JIRA_PROJECT_KEY} "
             f'AND status = "{STATUS_BACKLOG}" '
             f"AND parent = {epic_key} "
-            "ORDER BY key DESC"
+            "ORDER BY key ASC"
         )
         backlog_issues = jira_search_issues(jira, jql_bl)
         if backlog_issues:
